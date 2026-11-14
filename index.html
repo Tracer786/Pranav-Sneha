@@ -396,66 +396,166 @@ function goldDust(){const g=gate.getBoundingClientRect(),s=document.querySelecto
   for(let i=0;i<60;i++){const a=Math.random()*6.283,r=Math.sqrt(Math.random())*R,x=Math.cos(a)*r,y=Math.sin(a)*r,z=2+Math.random()*4.5,d=document.createElement('i');
     d.className='gd';d.style.cssText='left:'+(cx+x-z/2)+'px;top:'+(cy+y-z/2)+'px;width:'+z+'px;height:'+z+'px;background:'+cols[i%5]+';--dx:'+(x*1.9+(Math.random()*36-18))+'px;--dy:'+(y*1.9-30-Math.random()*70)+'px;--t:'+(1+Math.random()*.9)+'s;animation-delay:'+(Math.random()*.15)+'s';
     gate.appendChild(d);setTimeout(()=>d.remove(),2400)}}
-// background music controller with smooth fade-in, fade-out & seamless loop transition
-const music=document.getElementById('bg-music'),musicBtn=document.getElementById('music-toggle');
-const TARGET_VOL=0.75,FADE_INTERVAL=35;
-let isMusicPlaying=false,fadeTimer=null;
-function updateMusicUI(p){isMusicPlaying=p;if(!musicBtn)return;musicBtn.classList.toggle('playing',p);musicBtn.setAttribute('aria-pressed',p?'true':'false');const t=p?'Pause background music':'Play background music';musicBtn.setAttribute('title',t);musicBtn.setAttribute('aria-label',t)}
-function playMusic(){
-  if(!music)return;
-  if(fadeTimer)clearInterval(fadeTimer);
-  updateMusicUI(true);
-  const p=music.play();
-  if(p!==undefined){
-    p.then(()=>{
-      fadeTimer=setInterval(()=>{
-        if(music.paused||!isMusicPlaying){clearInterval(fadeTimer);return}
-        if(music.volume<TARGET_VOL-0.03){
-          music.volume=Math.min(TARGET_VOL,music.volume+0.04);
-        }else{
-          music.volume=TARGET_VOL;
-          clearInterval(fadeTimer);
-          fadeTimer=null;
-        }
-      },FADE_INTERVAL);
-    }).catch(()=>{updateMusicUI(false);if(fadeTimer)clearInterval(fadeTimer);fadeTimer=null});
+// Web Audio API + Fallback Dual-Layer Audio Engine (Smooth Fade-In, Fade-Out & Loop Transition)
+const music = document.getElementById('bg-music');
+const musicBtn = document.getElementById('music-toggle');
+const TARGET_VOL = 0.75;
+const FADE_IN_TIME = 1.2;   // 1.2s smooth rise
+const FADE_OUT_TIME = 0.6;  // 0.6s smooth gentle descent
+const LOOP_FADE_TIME = 1.2; // 1.2s seamless loop boundary crossfade
+
+let isMusicPlaying = false;
+let audioCtx = null;
+let gainNode = null;
+let sourceNode = null;
+let fadeTimer = null;
+let isFadingOut = false;
+
+function initAudioContext() {
+  if (audioCtx) return;
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (AudioCtx) {
+      audioCtx = new AudioCtx();
+      gainNode = audioCtx.createGain();
+      gainNode.gain.setValueAtTime(0, audioCtx.currentTime);
+      sourceNode = audioCtx.createMediaElementSource(music);
+      sourceNode.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+    }
+  } catch (e) {
+    audioCtx = null;
+    gainNode = null;
   }
 }
-function pauseMusic(){
-  if(!music)return;
-  if(fadeTimer)clearInterval(fadeTimer);
-  updateMusicUI(false);
-  fadeTimer=setInterval(()=>{
-    if(music.volume>0.05){
-      music.volume=Math.max(0,music.volume-0.05);
-    }else{
-      music.volume=0;
-      music.pause();
-      clearInterval(fadeTimer);
-      fadeTimer=null;
-    }
-  },FADE_INTERVAL);
+
+function updateMusicUI(p) {
+  isMusicPlaying = p;
+  if (!musicBtn) return;
+  musicBtn.classList.toggle('playing', p);
+  musicBtn.setAttribute('aria-pressed', p ? 'true' : 'false');
+  const t = p ? 'Pause background music' : 'Play background music';
+  musicBtn.setAttribute('title', t);
+  musicBtn.setAttribute('aria-label', t);
 }
-function toggleMusic(e){if(e){e.preventDefault();e.stopPropagation()}if(!isMusicPlaying||music.paused){playMusic()}else{pauseMusic()}}
-if(musicBtn){musicBtn.addEventListener('click',toggleMusic)}
-// loop smoothing: fade out near end of loop, fade in at beginning
-music.addEventListener('timeupdate',()=>{
-  if(!isMusicPlaying||music.paused||fadeTimer||!music.duration)return;
-  const rem=music.duration-music.currentTime,loopFadeTime=1.2;
-  if(rem<loopFadeTime){
-    music.volume=Math.max(0,TARGET_VOL*(rem/loopFadeTime));
-  }else if(music.currentTime<loopFadeTime){
-    music.volume=Math.min(TARGET_VOL,Math.max(0.05,TARGET_VOL*(music.currentTime/loopFadeTime)));
-  }else if(Math.abs(music.volume-TARGET_VOL)>0.03){
-    music.volume=TARGET_VOL;
+
+function setAudioGain(vol, durationSec, onEnd) {
+  if (fadeTimer) { clearInterval(fadeTimer); fadeTimer = null; }
+  
+  if (gainNode && audioCtx) {
+    try {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const now = audioCtx.currentTime;
+      gainNode.gain.cancelScheduledValues(now);
+      gainNode.gain.setValueAtTime(gainNode.gain.value, now);
+      gainNode.gain.linearRampToValueAtTime(vol, now + durationSec);
+    } catch (e) {}
+  }
+  
+  const startVol = music.volume;
+  const startTime = Date.now();
+  const durMs = durationSec * 1000;
+  
+  fadeTimer = setInterval(() => {
+    const elapsed = Date.now() - startTime;
+    const progress = Math.min(1, elapsed / durMs);
+    const cur = startVol + (vol - startVol) * progress;
+    try { music.volume = Math.max(0, Math.min(1, cur)); } catch (e) {}
+    
+    if (progress >= 1) {
+      clearInterval(fadeTimer);
+      fadeTimer = null;
+      if (onEnd) onEnd();
+    }
+  }, 30);
+}
+
+function playMusic() {
+  if (!music) return;
+  initAudioContext();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  
+  isFadingOut = false;
+  updateMusicUI(true);
+  
+  if (music.paused) {
+    try { music.volume = 0; } catch (e) {}
+    if (gainNode && audioCtx) {
+      try { gainNode.gain.setValueAtTime(0, audioCtx.currentTime); } catch (e) {}
+    }
+    const p = music.play();
+    if (p !== undefined) {
+      p.then(() => {
+        setAudioGain(TARGET_VOL, FADE_IN_TIME);
+      }).catch(() => {
+        updateMusicUI(false);
+      });
+    }
+  } else {
+    setAudioGain(TARGET_VOL, FADE_IN_TIME);
+  }
+}
+
+function pauseMusic() {
+  if (!music) return;
+  isFadingOut = true;
+  updateMusicUI(false);
+  
+  setAudioGain(0, FADE_OUT_TIME, () => {
+    if (isFadingOut) {
+      music.pause();
+      isFadingOut = false;
+    }
+  });
+}
+
+function toggleMusic(e) {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+  if (!isMusicPlaying || music.paused || isFadingOut) {
+    playMusic();
+  } else {
+    pauseMusic();
+  }
+}
+
+if (musicBtn) musicBtn.addEventListener('click', toggleMusic);
+
+// Seamless loop boundary: dip volume over final 1.2s, rise back over first 1.2s
+music.addEventListener('timeupdate', () => {
+  if (!isMusicPlaying || music.paused || fadeTimer || isFadingOut || !music.duration) return;
+  const rem = music.duration - music.currentTime;
+  if (rem < LOOP_FADE_TIME) {
+    const v = Math.max(0, TARGET_VOL * (rem / LOOP_FADE_TIME));
+    if (gainNode && audioCtx) {
+      try { gainNode.gain.setValueAtTime(v, audioCtx.currentTime); } catch(e) {}
+    }
+    try { music.volume = v; } catch(e) {}
+  } else if (music.currentTime < LOOP_FADE_TIME) {
+    const v = Math.min(TARGET_VOL, Math.max(0.04, TARGET_VOL * (music.currentTime / LOOP_FADE_TIME)));
+    if (gainNode && audioCtx) {
+      try { gainNode.gain.setValueAtTime(v, audioCtx.currentTime); } catch(e) {}
+    }
+    try { music.volume = v; } catch(e) {}
+  } else {
+    if (gainNode && audioCtx && Math.abs(gainNode.gain.value - TARGET_VOL) > 0.05) {
+      try { gainNode.gain.setValueAtTime(TARGET_VOL, audioCtx.currentTime); } catch(e) {}
+    }
+    if (Math.abs(music.volume - TARGET_VOL) > 0.05) {
+      try { music.volume = TARGET_VOL; } catch(e) {}
+    }
   }
 });
-let wasPlayingOnHide=false;
-document.addEventListener('visibilitychange',()=>{
-  if(document.hidden){
-    if(isMusicPlaying&&!music.paused){wasPlayingOnHide=true;pauseMusic()}
-  }else if(wasPlayingOnHide){
-    wasPlayingOnHide=false;playMusic()
+
+let wasPlayingOnHide = false;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (isMusicPlaying && !music.paused) {
+      wasPlayingOnHide = true;
+      pauseMusic();
+    }
+  } else if (wasPlayingOnHide) {
+    wasPlayingOnHide = false;
+    playMusic();
   }
 });
 
@@ -478,7 +578,7 @@ const car=document.getElementById('car'),slides=[...car.querySelectorAll('.slide
 const allImgs=[document.querySelector('.feat img'),...slides.map(s=>s.querySelector('img'))];
 let cur=0;
 slides.forEach((s,i)=>{const d=document.createElement('i');d.setAttribute('role','button');d.setAttribute('aria-label','Go to photo '+(i+1));d.addEventListener('click',()=>goTo(i));dotsEl.appendChild(d);s.addEventListener('click',()=>openLb(i+1))});
-function goTo(i){i=Math.max(0,Math.min(slides.length-1,i));const s=slides[i];car.scrollTo({left:s.offsetLeft-(car.clientWidth-s.offsetWidth)/2,behavior:'smooth'})}
+function goTo(i){i=(i+slides.length)%slides.length;const s=slides[i];car.scrollTo({left:s.offsetLeft-(car.clientWidth-s.offsetWidth)/2,behavior:'smooth'})}
 function upd(){const c=car.scrollLeft+car.clientWidth/2;let b=0,bd=1e9;slides.forEach((s,i)=>{const d=Math.abs(s.offsetLeft+s.offsetWidth/2-c);if(d<bd){bd=d;b=i}});cur=b;
   slides.forEach((s,i)=>s.classList.toggle('on',i===b));[...dotsEl.children].forEach((d,i)=>d.classList.toggle('on',i===b))}
 car.addEventListener('scroll',()=>requestAnimationFrame(upd),{passive:true});
